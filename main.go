@@ -12,7 +12,7 @@ import (
 )
 
 const url string = "http://localhost:8080"
-const byteSteps int = 5
+const byteSteps int = 15 //Tuning parameter. Must be greater than 0
 
 var wg sync.WaitGroup
 
@@ -20,6 +20,7 @@ func main() {
 	bestAPostion := 0
 	validResult := false
 	mtx := sync.Mutex{}
+
 	//Get main HTML
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -36,7 +37,6 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println(string(htmlBody))
 
 	//Get file url-s
 	fileCounter := 0
@@ -51,14 +51,15 @@ func main() {
 
 	//Download files
 	localIndexes := make([]int, fileCounter)
-	for i := 1; i <= fileCounter; i++ {
+	for k := 1; k <= fileCounter; k++ {
 		wg.Add(1)
 		go func(fileId int) {
 
 			fileName := "file" + strconv.Itoa(fileId) + ".txt"
 			fileUrl := url + "/" + fileName
-			bestLocalA := -1
-
+			mtx.Lock()
+			localIndexes[fileId-1] = -1
+			mtx.Unlock()
 			req, err := http.NewRequest("GET", fileUrl, nil)
 			if err != nil {
 				panic(err)
@@ -68,56 +69,50 @@ func main() {
 				panic(err)
 			}
 			defer out.Close()
-			for i := 0; ; i += byteSteps {
-				fmt.Println("asd")
-				rangeStr := "bytes=" + strconv.Itoa(i) + "-" + strconv.Itoa(i+byteSteps)
+			for i := 0; ; i = i + byteSteps {
+				rangeStr := "bytes=" + strconv.Itoa(i) + "-" + strconv.Itoa(i+byteSteps-1)
 				req.Header.Set("Range", rangeStr)
 				res, e := new(http.Client).Do(req)
 				if e != nil {
 					panic(e)
 				}
 				defer res.Body.Close()
-
 				StreamBytesPart, err := io.ReadAll(res.Body)
 				if err != nil {
 					panic(err)
 				}
 
 				StreamStringPart := string(StreamBytesPart)
-				fmt.Println(StreamStringPart)
 				mtx.Lock()
-				if strings.Index(StreamStringPart, "A") != -1 && bestLocalA == -1 {
-					bestLocalA = i + strings.Index(StreamStringPart, "A")
-					if !validResult || validResult && bestLocalA <= bestAPostion {
+				if strings.Index(StreamStringPart, "A") != -1 && localIndexes[fileId-1] == -1 {
+					localIndexes[fileId-1] = i + strings.Index(StreamStringPart, "A")
+					if !validResult || validResult && localIndexes[fileId-1] <= bestAPostion {
 						validResult = true
-						bestAPostion = bestLocalA
+						bestAPostion = localIndexes[fileId-1]
 					}
 				}
-				if bestLocalA == -1 && i > bestAPostion && validResult || bestLocalA != -1 && bestAPostion < bestLocalA && validResult {
-					bestLocalA = -1
+				if localIndexes[fileId-1] == -1 && i > bestAPostion && validResult || localIndexes[fileId-1] != -1 && bestAPostion < localIndexes[fileId-1] && validResult {
+					localIndexes[fileId-1] = -1
 					mtx.Unlock()
 					break
 				}
 				mtx.Unlock()
-				if strings.Compare(StreamStringPart, "invalid range: failed to overlap\n") == 0 {
+				if strings.Compare(StreamStringPart, "invalid range: failed to overlap\n") == 0 || len([]rune(StreamStringPart)) == 0 {
 					break
 				}
 				if _, err := out.WriteString(StreamStringPart); err != nil {
 					log.Fatal(err)
 				}
 			}
-			mtx.Lock()
-			localIndexes[fileId-1] = bestLocalA
-			mtx.Unlock()
+			fmt.Printf("%d Done\n", fileId)
 			wg.Done()
-		}(i)
+		}(k)
 	}
 	//Wait for all routines to finish
 	wg.Wait()
 
 	//Delete the unnecessary file chunks and files
 	fmt.Printf("Best Global position is: %d\n", bestAPostion)
-	fmt.Println(localIndexes)
 	for i := 1; i <= fileCounter; i++ {
 		if localIndexes[i-1] == -1 || localIndexes[i-1] < bestAPostion {
 			fileName := "file" + strconv.Itoa(i) + ".txt"
